@@ -613,7 +613,7 @@ async def get_user_insights(request: UserRequest):
     subreddit_engagement = {}
     for sub, count in user_data["subreddits"].items():
         sub_posts = [p for p in user_data["posts"] if p["subreddit"] == sub]
-        sub_comments = [c for c in user_data["comments"] if p["subreddit"] == sub]
+        sub_comments = [c for c in user_data["comments"] if c["subreddit"] == sub]
         total_upvotes = sum(p["upvotes"] for p in sub_posts) + sum(c["upvotes"] for c in sub_comments)
         total_downvotes = sum(p["downvotes"] for p in sub_posts) + sum(c["downvotes"] for c in sub_comments)
         subreddit_engagement[sub] = {
