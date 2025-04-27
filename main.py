@@ -20,11 +20,14 @@ from nltk.tokenize import word_tokenize
 import numpy as np
 from typing import List, Dict, Optional
 
-# Download NLTK data
-nltk.download("vader_lexicon")
-nltk.download("stopwords")
-nltk.download("punkt")
+
+# Download all necessary NLTK data at startup
+import nltk
 nltk.download('punkt_tab')
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('vader_lexicon')
+nltk.download('averaged_perceptron_tagger')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -39,7 +42,7 @@ app = FastAPI()
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://reddit-analyzer-frontend.vercel.app"],
+    allow_origins=["https://reddit-analyzer-frontend.vercel.app", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -148,9 +151,9 @@ async def fetch_user_data(username: str) -> Dict:
             )
             session.merge(user)
 
-            # Fetch all posts (no limit)
+            # Fetch posts and comments with a higher limit to ensure data
             posts = []
-            async for submission in redditor.submissions.new(limit=None):
+            async for submission in redditor.submissions.new(limit=200):
                 post = Post(
                     id=submission.id,
                     title=submission.title,
@@ -170,9 +173,8 @@ async def fetch_user_data(username: str) -> Dict:
                     "downvotes": post.downvotes,
                 })
 
-            # Fetch all comments (no limit)
             comments = []
-            async for comment in redditor.comments.new(limit=None):
+            async for comment in redditor.comments.new(limit=200):
                 comment_data = UserComment(
                     id=comment.id,
                     body=comment.body,
@@ -400,6 +402,13 @@ async def read_root():
             {"path": "/user", "description": "Fetch user data and a roast"},
             {"path": "/insights", "description": "Get detailed user insights"},
             {"path": "/reddit-therapist", "description": "Receive Reddit-focused advice"},
+            {"path": "/sentiment", "description": "Analyze sentiment of a subreddit"},
+            {"path": "/compare-subreddits", "description": "Compare two subreddits"},
+            {"path": "/toxicity-score", "description": "Get toxicity score for a user"},
+            {"path": "/predict-viral-post", "description": "Predict viral post potential"},
+            {"path": "/time-machine", "description": "View oldest Reddit activity"},
+            {"path": "/recommend-subreddits", "description": "Get subreddit recommendations"},
+            {"path": "/roast", "description": "Get a user roast"}
         ]
     }
 
@@ -716,16 +725,63 @@ async def get_user_insights(request: UserRequest):
 async def compare_subreddits(request: SubredditComparisonRequest):
     session = Session()
     try:
-        sub1_posts = session.query(Post).filter_by(subreddit=request.subreddit1).limit(100).all()
-        sub2_posts = session.query(Post).filter_by(subreddit=request.subreddit2).limit(100).all()
+        # Helper function to fetch and store posts for a subreddit
+        async def fetch_and_store_posts(subreddit_name: str):
+            posts = session.query(Post).filter_by(subreddit=subreddit_name).limit(100).all()
+            if not posts:  # If no posts in DB, fetch from Reddit
+                posts = []  # Reset to empty list for fetched data
+                subreddit = await reddit.subreddit(subreddit_name)
+                try:
+                    async for submission in subreddit.hot(limit=100):
+                        post = Post(
+                            id=submission.id,
+                            title=submission.title,
+                            subreddit=subreddit_name,
+                            created_utc=submission.created_utc,
+                            username=submission.author.name if submission.author else "deleted",
+                            upvotes=submission.ups,
+                            downvotes=submission.downs,
+                        )
+                        session.merge(post)
+                        posts.append({
+                            "id": post.id,
+                            "title": post.title,
+                            "subreddit": post.subreddit,
+                            "created_utc": post.created_utc,
+                            "username": post.username,
+                            "upvotes": post.upvotes,
+                            "downvotes": post.downvotes,
+                        })
+                    session.commit()
+                except asyncprawcore.exceptions.NotFound:
+                    raise HTTPException(status_code=404, detail=f"Subreddit {subreddit_name} not found")
+            else:
+                # Convert Post objects to dictionaries for consistency
+                posts = [{
+                    "id": p.id,
+                    "title": p.title,
+                    "subreddit": p.subreddit,
+                    "created_utc": p.created_utc,
+                    "username": p.username,
+                    "upvotes": p.upvotes,
+                    "downvotes": p.downvotes,
+                } for p in posts]
+            return posts
+
+        # Fetch posts for both subreddits
+        sub1_posts = await fetch_and_store_posts(request.subreddit1)
+        sub2_posts = await fetch_and_store_posts(request.subreddit2)
+
+        # Check if posts were fetched successfully
         if not sub1_posts or not sub2_posts:
-            raise HTTPException(status_code=404, detail="Subreddit posts not found")
+            raise HTTPException(status_code=404, detail="Subreddit posts not found after fetching")
 
         sia = SentimentIntensityAnalyzer()
-        sub1_sentiment = np.mean([sia.polarity_scores(p.title)["compound"] for p in sub1_posts])
-        sub2_sentiment = np.mean([sia.polarity_scores(p.title)["compound"] for p in sub2_posts])
-        sub1_engagement = np.mean([p.upvotes for p in sub1_posts])
-        sub2_engagement = np.mean([p.upvotes for p in sub2_posts])
+        # Use dictionary key 'title' instead of attribute
+        sub1_sentiment = np.mean([sia.polarity_scores(p["title"])["compound"] for p in sub1_posts if p["title"]])
+        sub2_sentiment = np.mean([sia.polarity_scores(p["title"])["compound"] for p in sub2_posts if p["title"]])
+        sub1_engagement = np.mean([p["upvotes"] for p in sub1_posts])
+        sub2_engagement = np.mean([p["upvotes"] for p in sub2_posts])
 
         sentiment_winner = (
             request.subreddit1 if sub1_sentiment > sub2_sentiment else request.subreddit2
@@ -761,6 +817,8 @@ async def compare_subreddits(request: SubredditComparisonRequest):
             },
             "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         }
+    except HTTPException as e:
+        raise e
     except Exception as e:
         session.rollback()
         logger.error(f"Error comparing subreddits {request.subreddit1} and {request.subreddit2}: {str(e)}")
@@ -943,17 +1001,20 @@ async def predict_viral_post(request: ViralPostPredictionRequest):
 @app.post("/time-machine")
 async def reddit_time_machine(request: UserRequest):
     user_data = await fetch_user_data(request.username)
+    if not user_data["posts"] and not user_data["comments"]:
+        raise HTTPException(status_code=404, detail="No activity found for this user")
+
     oldest_activity = min(
         [p["created_utc"] for p in user_data["posts"]] + [c["created_utc"] for c in user_data["comments"]],
         default=None
     )
     if not oldest_activity:
-        raise HTTPException(status_code=404, detail="No activity found")
+        raise HTTPException(status_code=500, detail="Failed to determine oldest activity")
 
-    oldest_post = min(user_data["posts"], key=lambda x: x["created_utc"], default={})
-    oldest_comment = min(user_data["comments"], key=lambda x: x["created_utc"], default={})
+    oldest_post = min(user_data["posts"], key=lambda x: x["created_utc"], default=None) if user_data["posts"] else None
+    oldest_comment = min(user_data["comments"], key=lambda x: x["created_utc"], default=None) if user_data["comments"] else None
 
-    oldest_activity_date = datetime.utcfromtimestamp(oldest_activity).strftime("%Y-%m-%d")
+    oldest_activity_date = datetime.utcfromtimestamp(oldest_activity).strftime("%Y-%m-%d") if oldest_activity else "N/A"
     oldest_post_date = datetime.utcfromtimestamp(oldest_post["created_utc"]).strftime("%Y-%m-%d %H:%M:%S UTC") if oldest_post else "N/A"
     oldest_comment_date = datetime.utcfromtimestamp(oldest_comment["created_utc"]).strftime("%Y-%m-%d %H:%M:%S UTC") if oldest_comment else "N/A"
 
@@ -962,19 +1023,19 @@ async def reddit_time_machine(request: UserRequest):
         "time_machine": {
             "oldest_activity_date": oldest_activity_date,
             "oldest_post": {
-                "title": oldest_post.get("title", "No posts found"),
+                "title": oldest_post["title"] if oldest_post else "No posts found",
                 "subreddit": f"r/{oldest_post['subreddit']}" if oldest_post else "N/A",
                 "posted_at": oldest_post_date
             },
             "oldest_comment": {
-                "body": oldest_comment.get("body", "No comments found")[:100] + "..." if oldest_comment and len(oldest_comment.get("body", "")) > 100 else oldest_comment.get("body", "No comments found"),
+                "body": (oldest_comment["body"][:100] + "...") if oldest_comment and len(oldest_comment["body"]) > 100 else oldest_comment["body"] if oldest_comment else "No comments found",
                 "subreddit": f"r/{oldest_comment['subreddit']}" if oldest_comment else "N/A",
                 "posted_at": oldest_comment_date
             },
             "narrative": (
                 f"Let’s hop in the Reddit time machine, u/{request.username}! "
-                f"Way back on {oldest_activity_date}, you kicked off your journey—your first post was '{oldest_post.get('title', 'nothing')}' in r/{oldest_post['subreddit'] if oldest_post else 'N/A'}. "
-                f"Around the same time, you dropped your first comment in r/{oldest_comment['subreddit'] if oldest_comment else 'N/A'}, saying '{oldest_comment.get('body', 'nothing')[:50] + '...' if oldest_comment and len(oldest_comment.get('body', '')) > 50 else oldest_comment.get('body', 'nothing')}'. "
+                f"Way back on {oldest_activity_date}, you kicked off your journey—your first post was '{oldest_post['title'] if oldest_post else 'nothing'}' in r/{oldest_post['subreddit'] if oldest_post else 'N/A'}. "
+                f"Around the same time, you dropped your first comment in r/{oldest_comment['subreddit'] if oldest_comment else 'N/A'}, saying '{(oldest_comment['body'][:50] + '...') if oldest_comment and len(oldest_comment['body']) > 50 else oldest_comment['body'] if oldest_comment else 'nothing'}'. "
                 f"What a throwback—look how far you’ve come since then!"
             )
         },
