@@ -24,6 +24,7 @@ from typing import List, Dict, Optional
 nltk.download("vader_lexicon")
 nltk.download("stopwords")
 nltk.download("punkt")
+nltk.download('punkt_tab')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
