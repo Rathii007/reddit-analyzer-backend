@@ -651,15 +651,13 @@ async def get_user_insights(request: UserRequest):
     top_post = max(user_data["posts"], key=lambda x: x["upvotes"], default=None)
     top_comment = max(user_data["comments"], key=lambda x: x["upvotes"], default=None)
 
-    if not summary_data:
-        summary = (
-            f"{request.username} has been a Redditor for {account_age_years:.1f} years, amassing {total_karma} karma with {total_posts} posts and {total_comments} comments. "
-            f"They're a regular in r/{top_subreddit}, where they’ve made a name for themselves with {user_data['subreddits'].get(top_subreddit, 0)} activities. "
-            f"Their content has a {sentiment_label} vibe, with top interests including {', '.join(word for word, _ in top_interests[:3]) or 'various topics'}. "
-            f"You’ll catch them posting most around {', '.join(f'{hour}:00 ({count} activities)' for hour, count in active_hours)} UTC, especially on {active_days[0][0] if active_days else 'various days'}."
-        )
-    else:
-        summary = summary_data["summary"]
+    summary = (
+        summary_data["summary"] if summary_data else
+        f"{request.username} has been a Redditor for {account_age_years:.1f} years, amassing {total_karma} karma with {total_posts} posts and {total_comments} comments. "
+        f"They're a regular in r/{top_subreddit}, where they’ve made a name for themselves with {user_data['subreddits'].get(top_subreddit, 0)} activities. "
+        f"Their content has a {sentiment_label} vibe, with top interests including {', '.join(word for word, _ in top_interests[:3]) or 'various topics'}. "
+        f"You’ll catch them posting most around {', '.join(f'{hour}:00 ({count} activities)' for hour, count in active_hours)} UTC, especially on {active_days[0][0] if active_days else 'various days'}."
+    )
 
     subreddit_categories = {
         "IndianDankMemes": ["meme culture", "Indian pop culture", "humor"],
@@ -680,9 +678,8 @@ async def get_user_insights(request: UserRequest):
                 "total_posts": total_posts,
                 "total_comments": total_comments,
                 "total_karma": total_karma,
-                "data_summarized": summary_data is not None,
-                "summary": summary,
-                "total_activities": summary_data["total_activities"] if summary_data else total_activities,
+                "summary": summary,  # Moved summary here for clarity
+                "total_activities": total_activities,
             },
             "top_interests": [{"word": word, "count": count} for word, count in top_interests],
             "controversial_takes": controversial_comments or [{"message": "No controversial takes found. You're keeping it chill!"}],
